@@ -69,6 +69,12 @@ async def exists(item):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """
+    функция preload_database подгружает из бд в список ITEMS,
+    спаршенные продукты проверяет есть ли в ITEMS, если нет то добавляет и в ITEMS и в бд
+    сделал так чтобы на каждый раз когда парсилось не добавлялись повторы в бд и сохранялись записи post-запросов, а если бы и удаляли бд,
+    то записи из post-запросов не сохранились
+    """
     create_db()
     await preload_database()
     await startup_events()
@@ -81,10 +87,6 @@ async def startup_events():
 
 app = FastAPI(lifespan=lifespan)
 
-
-@app.get("/")
-async def root():
-    return {"message": "Hello World"}
 
 @app.get("/items")
 async def get_items(session: AsyncSession=SessionDep):
