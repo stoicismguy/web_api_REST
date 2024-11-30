@@ -50,13 +50,21 @@ async def background_parser_async():
             products = await run_in_threadpool(get_products)
             for title, price in products:
                 item = Item(title=title, price=price)
-                if item not in ITEMS:
+                ex = await exists(item)
+                if not ex:
                     session.add(item)
                     ITEMS.append(item)
 
             await session.commit()
             print("Items updated.")
             await asyncio.sleep(20)
+
+async def exists(item):
+    global ITEMS
+    async for i in ITEMS:
+        if await i.title == item.title and i.price == item.price:
+            return True
+    return False
 
 
 @asynccontextmanager
@@ -72,7 +80,6 @@ async def startup_events():
 
 
 app = FastAPI(lifespan=lifespan)
-# app = FastAPI()
 
 
 @app.get("/")
@@ -80,19 +87,17 @@ async def root():
     return {"message": "Hello World"}
 
 @app.get("/items")
-async def get_items():
-    global ITEMS
-    return ITEMS
+async def get_items(session: AsyncSession=SessionDep):
+    items = await session.execute(select(Item))
+    items = items.scalars().all()
+    return items
 
 
-@app.delete("/items/{item_id}")
-async def delete_item(item_id: int, session: AsyncSession=SessionDep):
+@app.get("/items/{item_id}")
+async def get_item(item_id: int, session: AsyncSession=SessionDep):
     item = await session.execute(select(Item).where(Item.id == item_id))
     item = item.scalars().first()
-    await session.delete(item)
-    await session.commit()
-    ITEMS.remove(item)
-    return {"message": "Item deleted"}
+    return item
 
 
 @app.post("/items/create")
@@ -100,3 +105,23 @@ async def create_item(item: Item, session: AsyncSession=SessionDep):
     session.add(item)
     await session.commit()
     return item
+
+
+@app.put("/items/{item_id}")
+async def update_item(item: Item, session: AsyncSession=SessionDep):
+    founded = await session.execute(select(Item).where(Item.id == item.id))
+    founded = founded.scalars().first()
+    founded.title = item.title
+    founded.price = item.price
+    await session.commit()
+    return item
+
+@app.delete("/items/{item_id}")
+async def delete_item(item_id: int, session: AsyncSession=SessionDep):
+    item = await session.execute(select(Item).where(Item.id == item_id))
+    item = item.scalars().first()
+    await session.delete(item)
+    await session.commit()
+    return {"message": "Item deleted"}
+
+
