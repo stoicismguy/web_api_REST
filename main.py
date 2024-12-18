@@ -1,4 +1,5 @@
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI, Depends, WebSocket
+import json
 from sqlalchemy import create_engine, Column, String, Integer
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
@@ -14,8 +15,24 @@ ITEMS = []
 
 DATABASE_URL = "sqlite+aiosqlite:///parser.db"
 engine = create_async_engine(DATABASE_URL, echo=True)
-AsyncSessionLocal = async_sessionmaker(engine)
+AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 
+
+class ConnectionManager:
+    
+    def __init__(self):
+        self.connections: list[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.connections.append(websocket)
+
+    async def broadcast(self, data: str):
+        for connection in self.connections:
+                await connection.send_text(data)
+
+
+manager = ConnectionManager()
 
 class Item(SQLModel, table=True):
     __tablename__ = "items"
@@ -54,6 +71,7 @@ async def background_parser_async():
                 if not ex:
                     session.add(item)
                     ITEMS.append(item)
+                    await manager.broadcast(f"POST {item.model_dump_json()}")
 
             await session.commit()
             print("Items updated.")
@@ -61,8 +79,8 @@ async def background_parser_async():
 
 async def exists(item):
     global ITEMS
-    async for i in ITEMS:
-        if await i.title == item.title and i.price == item.price:
+    for i in ITEMS:
+        if i.title == item.title and i.price == item.price:
             return True
     return False
 
@@ -106,6 +124,8 @@ async def get_item(item_id: int, session: AsyncSession=SessionDep):
 async def create_item(item: Item, session: AsyncSession=SessionDep):
     session.add(item)
     await session.commit()
+    await session.refresh(item)
+    await manager.broadcast(f"POST {item.model_dump_json()}")
     return item
 
 
@@ -116,6 +136,7 @@ async def update_item(item: Item, session: AsyncSession=SessionDep):
     founded.title = item.title
     founded.price = item.price
     await session.commit()
+    await manager.broadcast(f"PUT {item.model_dump_json()}")
     return item
 
 @app.delete("/items/{item_id}")
@@ -123,7 +144,17 @@ async def delete_item(item_id: int, session: AsyncSession=SessionDep):
     item = await session.execute(select(Item).where(Item.id == item_id))
     item = item.scalars().first()
     await session.delete(item)
+    await manager.broadcast(f"DELETE {item.model_dump_json()}")
     await session.commit()
     return {"message": "Item deleted"}
 
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await manager.connect(websocket)
+    try:
+        while True:
+            data = await websocket.receive_text()
+    except:
+        await manager.broadcast(f"Cliend {websocket} disconnected.")
 
