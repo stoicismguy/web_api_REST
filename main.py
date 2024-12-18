@@ -11,11 +11,11 @@ from utils import get_products
 from contextlib import asynccontextmanager
 
 
-ITEMS = []
+ITEMS = {}
 
 DATABASE_URL = "sqlite+aiosqlite:///parser.db"
 engine = create_async_engine(DATABASE_URL, echo=True)
-AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
+AsyncSessionLocal = async_sessionmaker(engine)
 
 
 class ConnectionManager:
@@ -57,20 +57,20 @@ async def preload_database():
     async for session in get_session():
         query = await session.execute(select(Item))
         items = query.scalars().all()
-        ITEMS = items
+        for item in items:
+            ITEMS[item.title] = item
     print(f"Database preloaded. items: {len(ITEMS)}")
 
 async def background_parser_async():
     global ITEMS
-    async for session in get_session():
-        while True:
+    while True:
+        async with AsyncSessionLocal() as session:
             products = await run_in_threadpool(get_products)
             for title, price in products:
                 item = Item(title=title, price=price)
-                ex = await exists(item)
-                if not ex:
+                if title not in ITEMS:
                     session.add(item)
-                    ITEMS.append(item)
+                    ITEMS[title] = item
                     await manager.broadcast(f"POST {item.model_dump_json()}")
 
             await session.commit()
@@ -108,8 +108,10 @@ app = FastAPI(lifespan=lifespan)
 
 @app.get("/items")
 async def get_items(session: AsyncSession=SessionDep):
+    global ITEMS
     items = await session.execute(select(Item))
     items = items.scalars().all()
+    print(ITEMS)
     return items
 
 
@@ -122,9 +124,11 @@ async def get_item(item_id: int, session: AsyncSession=SessionDep):
 
 @app.post("/items/create")
 async def create_item(item: Item, session: AsyncSession=SessionDep):
+    global ITEMS
     session.add(item)
     await session.commit()
     await session.refresh(item)
+    ITEMS[item.title] = item
     await manager.broadcast(f"POST {item.model_dump_json()}")
     return item
 
@@ -133,6 +137,7 @@ async def create_item(item: Item, session: AsyncSession=SessionDep):
 async def update_item(item: Item, session: AsyncSession=SessionDep):
     founded = await session.execute(select(Item).where(Item.id == item.id))
     founded = founded.scalars().first()
+    ITEMS[founded.title] = item
     founded.title = item.title
     founded.price = item.price
     await session.commit()
@@ -141,8 +146,10 @@ async def update_item(item: Item, session: AsyncSession=SessionDep):
 
 @app.delete("/items/{item_id}")
 async def delete_item(item_id: int, session: AsyncSession=SessionDep):
+    global ITEMS
     item = await session.execute(select(Item).where(Item.id == item_id))
     item = item.scalars().first()
+    ITEMS.pop(item.title)
     await session.delete(item)
     await manager.broadcast(f"DELETE {item.model_dump_json()}")
     await session.commit()
